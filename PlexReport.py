@@ -1,149 +1,174 @@
+import sys
 import os
 import csv
-import glob
-import configparser
-import tkinter as tk
-from tkinter import filedialog, ttk
+import json
+from datetime import datetime
+from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QLineEdit, QPushButton, QFileDialog, QCheckBox, QScrollArea, QFrame
+from PyQt5.QtCore import Qt
 
-config_filename = 'config.ini'
+class PlexMetaManagerGUI(QWidget):
+    def __init__(self):
+        super().__init__()
 
-def load_config():
-    config = configparser.ConfigParser()
-    config.read(config_filename)
+        self.config_file = 'config.json'
+        self.load_config()
 
-    if 'Collections' in config and 'selected_collections' in config['Collections']:
-        selected_collections = config['Collections']['selected_collections'].split(',')
-    else:
-        selected_collections = []
+        self.init_ui()
 
-    if 'Settings' in config and 'logs_folder' in config['Settings']:
-        logs_folder = config['Settings']['logs_folder']
-    else:
-        logs_folder = None
+    def load_config(self):
+        if os.path.exists(self.config_file):
+            with open(self.config_file, 'r') as file:
+                config = json.load(file)
+                self.collections_folder_path = config.get('collections_folder', '')
+                self.csv_save_location_path = config.get('csv_save_location', '')
+        else:
+            self.collections_folder_path = ''
+            self.csv_save_location_path = ''
 
-    return selected_collections, logs_folder
+    def save_config(self):
+        config = {
+            'collections_folder': self.collections_folder.text(),
+            'csv_save_location': self.csv_save_location.text()
+        }
+        with open(self.config_file, 'w') as file:
+            json.dump(config, file)
 
-def save_config(selected_collections, logs_folder):
-    config = configparser.ConfigParser()
-    config['Collections'] = {
-        'selected_collections': ','.join(selected_collections)
-    }
-    config['Settings'] = {
-        'logs_folder': logs_folder
-    }
+    def init_ui(self):
+        self.setWindowTitle('Plex Meta Manager Collections Report')
+        self.resize(1280,720)
 
-    with open(config_filename, 'w') as configfile:
-        config.write(configfile)
+        vbox = QVBoxLayout()
 
-def read_collection_logs(collection_folders, selected_collections):
-    data = []
+        hbox1 = QHBoxLayout()
+        hbox1.addWidget(QLabel('Collections Folder:'))
+        self.collections_folder = QLineEdit(self.collections_folder_path)
+        hbox1.addWidget(self.collections_folder)
+        browse_collections_btn = QPushButton('Browse')
+        browse_collections_btn.clicked.connect(self.browse_collections)
+        hbox1.addWidget(browse_collections_btn)
+        vbox.addLayout(hbox1)
 
-    for folder in collection_folders:
-        collection_name = os.path.basename(os.path.normpath(folder))
+        hbox2 = QHBoxLayout()
+        hbox2.addWidget(QLabel('Save CSV to:'))
+        self.csv_save_location = QLineEdit(self.csv_save_location_path)
+        hbox2.addWidget(self.csv_save_location)
+        browse_csv_btn = QPushButton('Browse')
+        browse_csv_btn.clicked.connect(self.browse_csv)
+        hbox2.addWidget(browse_csv_btn)
+        vbox.addLayout(hbox2)
 
-        if collection_name in selected_collections:
-            processed_count = 0
-            missing_count = 0
+        update_collections_btn = QPushButton('Update Collection List')
+        update_collections_btn.clicked.connect(self.update_collections)
+        vbox.addWidget(update_collections_btn)
 
-            log_files = glob.glob(os.path.join(folder, '*.log'))
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        vbox.addWidget(self.scroll_area)
+
+        generate_report_btn = QPushButton('Generate Reports')
+        generate_report_btn.clicked.connect(self.generate_reports)
+        vbox.addWidget(generate_report_btn)
+
+        self.setLayout(vbox)
+
+    def browse_collections(self):
+        folder = QFileDialog.getExistingDirectory(self, 'Select Collections Folder')
+        if folder:
+            self.collections_folder.setText(folder)
+
+    def browse_csv(self):
+        folder = QFileDialog.getExistingDirectory(self, 'Select CSV Save Location')
+        if folder:
+            self.csv_save_location.setText(folder)
+
+    def update_collections(self):
+        collections_path = self.collections_folder.text()
+        if not os.path.isdir(collections_path):
+            return
+
+        collections = [folder for folder in os.listdir(collections_path) if os.path.isdir(os.path.join(collections_path, folder))]
+        collections.sort()
+
+        grid_layout = QGridLayout()
+        self.checkboxes = []
+
+        columns = 3  # Set the number of columns you want
+        index = 0
+
+        for collection in collections:
+            collection_folder = os.path.join(collections_path, collection)
+            log_files = [f for f in os.listdir(collection_folder) if os.path.isfile(os.path.join(collection_folder, f)) and f.endswith('.log')]
+
+            include_collection = False
 
             for log_file in log_files:
-                with open(log_file, 'r', encoding='utf-8') as f:
-                    lines = f.readlines()
+                with open(os.path.join(collection_folder, log_file), 'r', encoding='utf-8') as file:
+                    log_content = file.read()
 
-                for line in lines:
-                    if "Movies Processed" in line:
-                        processed_count += int(line.split("Movies Processed")[0].split()[-1])
-                    elif "Movies Missing" in line:
-                        missing_count += int(line.split("Movies Missing")[0].split()[-1])
+                    movies_processed_line = next((line for line in log_content.split('\n') if 'Movies Processed' in line), None)
+                    movies_missing_line = next((line for line in log_content.split('\n') if 'Movies Missing' in line), None)
 
-            data.append((collection_name, processed_count, missing_count))
+                    if movies_processed_line or movies_missing_line:
+                        include_collection = True
+                        break
 
-    return data
+            if include_collection:
+                row = index // columns
+                col = index % columns
+                checkbox = QCheckBox(collection)
+                grid_layout.addWidget(checkbox, row, col)
+                self.checkboxes.append(checkbox)
+                index += 1
 
-def save_to_csv(collection_data, output_file):
-    with open(output_file, 'w', newline='', encoding='utf-8') as csvfile:
-        csvwriter = csv.writer(csvfile)
-        csvwriter.writerow(['Collection', 'Processed Movies', 'Missing Movies'])
-        csvwriter.writerows(collection_data)
-
-def browse_logs_folder():
-    folder = filedialog.askdirectory(title='Select the folder containing the logs')
-    if folder:
-        logs_folder_var.set(folder)
-
-def proceed_to_collections():
-    global logs_folder
-    logs_folder = logs_folder_var.get()
-    if logs_folder:
-        save_config(prev_selected_collections, logs_folder)
-        collection_selection_screen()
-
-def collection_selection_screen():
-    folder_selection_frame.pack_forget()
-    collection_selection_frame.pack()
-
-    collection_folders = glob.glob(os.path.join(logs_folder, '*/'))
-
-    for folder in collection_folders:
-        folder = folder.rstrip(os.path.sep)
-        collection_name = os.path.basename(folder)
-        collection_var = tk.BooleanVar(value=collection_name in prev_selected_collections)
-        collection_vars[collection_name] = collection_var
-        cb = tk.Checkbutton(scrollable_frame, text=collection_name, variable=collection_var)
-        cb.pack(anchor="w")
-
-prev_selected_collections, logs_folder = load_config()
-
-root = tk.Tk()
-root.title("Plex Meta Manager Collection Report")
-
-def generate_report():
-    selected_collections = [name for name, var in collection_vars.items() if var.get()]
-    save_config(selected_collections, logs_folder)
-
-    collection_folders = glob.glob(os.path.join(logs_folder, '*/'))
-    collection_data = read_collection_logs(collection_folders, selected_collections)
-    output_file = os.path.join(logs_folder, 'collection_report.csv')
-    save_to_csv(collection_data, output_file)
-
-    print("Report saved as:", output_file)
+        frame = QFrame()
+        frame.setLayout(grid_layout)
+        self.scroll_area.setWidget(frame)
 
 
-# Folder Selection Frame
-folder_selection_frame = ttk.Frame(root)
-folder_selection_frame.pack(padx=10, pady=10)
 
-logs_folder_var = tk.StringVar(value=logs_folder)
-logs_folder_entry = ttk.Entry(folder_selection_frame, textvariable=logs_folder_var, width=60)
-logs_folder_entry.pack(side="left", padx=(0, 5))
+    def generate_reports(self):
+        collections_path = self.collections_folder.text()
+        save_path = self.csv_save_location.text()
 
-browse_button = ttk.Button(folder_selection_frame, text="Browse", command=browse_logs_folder)
-browse_button.pack(side="left")
+        if not os.path.isdir(collections_path) or not os.path.isdir(save_path):
+            return
 
-proceed_button = ttk.Button(folder_selection_frame, text="Proceed", command=proceed_to_collections)
-proceed_button.pack(side="left", padx=(5, 0))
+        report_data = [['Collection Name', 'Movies in Collection', 'Movies Missing']]
 
-# Collection Selection Frame
-collection_selection_frame = ttk.Frame(root)
+        for checkbox in self.checkboxes:
+            if checkbox.isChecked():
+                collection_name = checkbox.text()
+                collection_folder = os.path.join(collections_path, collection_name)
+                log_files = [f for f in os.listdir(collection_folder) if os.path.isfile(os.path.join(collection_folder, f)) and f.endswith('.log')]
 
-frame = ttk.Frame(collection_selection_frame)
-frame.pack(padx=10, pady=10)
+                num_movies = 0
+                num_missing = 0
 
-canvas = tk.Canvas(frame, width=500, height=500)
-scrollbar = ttk.Scrollbar(frame, orient="vertical", command=canvas.yview)
-scrollable_frame = ttk.Frame(canvas)
+                for log_file in log_files:
+                    with open(os.path.join(collection_folder, log_file), 'r', encoding='utf-8') as file:
+                        log_content = file.read()
 
-scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-canvas.configure(yscrollcommand=scrollbar.set)
+                        movies_processed_line = next((line for line in log_content.split('\n') if 'Movies Processed' in line), None)
+                        if movies_processed_line:
+                            num_movies += int(movies_processed_line.split("Movies Processed")[0].split()[-1])
 
-collection_vars = {}
+                        movies_missing_line = next((line for line in log_content.split('\n') if 'Movies Missing' in line), None)
+                        if movies_missing_line:
+                            num_missing += int(movies_missing_line.split("Movies Missing")[0].split()[-1])
 
-canvas.pack(side="left", fill="both", expand=True)
-scrollbar.pack(side="right", fill="y")
+                report_data.append([collection_name, num_movies, num_missing])
 
-generate_button = ttk.Button(collection_selection_frame, text="Generate Report", command=generate_report)
-generate_button.pack(pady=(10, 0))
+        timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+        csv_filename = os.path.join(save_path, f'collections_report_{timestamp}.csv')
 
-root.mainloop()
+        with open(csv_filename, 'w', newline='') as csvfile:
+            csv_writer = csv.writer(csvfile)
+            csv_writer.writerows(report_data)
+
+        print(f'Report saved to {csv_filename}')
+
+if __name__ == '__main__':
+    app = QApplication(sys.argv)
+    window = PlexMetaManagerGUI()
+    window.show()
+    sys.exit(app.exec_())
